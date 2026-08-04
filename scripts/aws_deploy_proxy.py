@@ -90,9 +90,14 @@ def ensure_role(iam_client, role_name: str, bucket_name: str, table_name: str) -
     try:
         role = iam_client.get_role(RoleName=role_name)["Role"]
         role_arn = role["Arn"]
-    except ClientError:
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "NoSuchEntity":
+            raise
         role = iam_client.create_role(RoleName=role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))["Role"]
         role_arn = role["Arn"]
+
+    # Enforce trust policy on every run in case the role was edited out of band.
+    iam_client.update_assume_role_policy(RoleName=role_name, PolicyDocument=json.dumps(trust_policy))
 
     inline_policy = {
         "Version": "2012-10-17",
@@ -115,6 +120,9 @@ def ensure_role(iam_client, role_name: str, bucket_name: str, table_name: str) -
         ],
     }
     iam_client.put_role_policy(RoleName=role_name, PolicyName="SecureShareProxyPolicy", PolicyDocument=json.dumps(inline_policy))
+
+    # IAM role and policy propagation can lag; Lambda CreateFunction may fail briefly without this delay.
+    time.sleep(10)
     return role_arn
 
 
@@ -127,8 +135,15 @@ def package_lambda_code() -> bytes:
 
 def ensure_lambda(lambda_client, function_name: str, role_arn: str, bucket_name: str, table_name: str) -> None:
     code_zip = package_lambda_code()
+    function_exists = False
     try:
         lambda_client.get_function(FunctionName=function_name)
+        function_exists = True
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise
+
+    if function_exists:
         lambda_client.update_function_code(FunctionName=function_name, ZipFile=code_zip)
         lambda_client.update_function_configuration(
             FunctionName=function_name,
@@ -139,17 +154,28 @@ def ensure_lambda(lambda_client, function_name: str, role_arn: str, bucket_name:
             MemorySize=512,
             Environment={"Variables": {"SHARE_BUCKET_NAME": bucket_name, "SHARE_TABLE_NAME": table_name}},
         )
-    except ClientError:
-        lambda_client.create_function(
-            FunctionName=function_name,
-            Role=role_arn,
-            Runtime="python3.12",
-            Handler="aws_proxy_lambda.handler",
-            Timeout=30,
-            MemorySize=512,
-            Environment={"Variables": {"SHARE_BUCKET_NAME": bucket_name, "SHARE_TABLE_NAME": table_name}},
-            Code={"ZipFile": code_zip},
-        )
+    else:
+        # Retry create to handle eventual consistency of freshly created/updated IAM role trust policy.
+        for attempt in range(1, 8):
+            try:
+                lambda_client.create_function(
+                    FunctionName=function_name,
+                    Role=role_arn,
+                    Runtime="python3.12",
+                    Handler="aws_proxy_lambda.handler",
+                    Timeout=30,
+                    MemorySize=512,
+                    Environment={"Variables": {"SHARE_BUCKET_NAME": bucket_name, "SHARE_TABLE_NAME": table_name}},
+                    Code={"ZipFile": code_zip},
+                )
+                break
+            except ClientError as error:
+                code = error.response.get("Error", {}).get("Code")
+                message = error.response.get("Error", {}).get("Message", "")
+                is_assume_role_delay = code == "InvalidParameterValueException" and "cannot be assumed by Lambda" in message
+                if not is_assume_role_delay or attempt == 7:
+                    raise
+                time.sleep(5 * attempt)
 
     # Give IAM and Lambda time to settle before URL operations.
     time.sleep(8)
