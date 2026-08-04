@@ -69,10 +69,25 @@ def ensure_table(dynamodb_client, table_name: str) -> None:
         )
         waiter = dynamodb_client.get_waiter("table_exists")
         waiter.wait(TableName=table_name)
-    dynamodb_client.update_time_to_live(
-        TableName=table_name,
-        TimeToLiveSpecification={"AttributeName": "expiresAtEpoch", "Enabled": True},
-    )
+    ttl_description = dynamodb_client.describe_time_to_live(TableName=table_name).get("TimeToLiveDescription", {})
+    ttl_status = ttl_description.get("TimeToLiveStatus", "DISABLED")
+    ttl_attribute = ttl_description.get("AttributeName")
+
+    # DynamoDB rejects duplicate enable calls with ValidationException.
+    if ttl_status in {"ENABLED", "ENABLING"} and ttl_attribute == "expiresAtEpoch":
+        return
+
+    try:
+        dynamodb_client.update_time_to_live(
+            TableName=table_name,
+            TimeToLiveSpecification={"AttributeName": "expiresAtEpoch", "Enabled": True},
+        )
+    except ClientError as error:
+        code = error.response.get("Error", {}).get("Code")
+        message = error.response.get("Error", {}).get("Message", "")
+        if code == "ValidationException" and "already enabled" in message.lower():
+            return
+        raise
 
 
 def ensure_role(iam_client, role_name: str, bucket_name: str, table_name: str) -> str:
