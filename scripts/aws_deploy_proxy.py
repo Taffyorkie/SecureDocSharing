@@ -206,7 +206,8 @@ def ensure_function_url(lambda_client, function_name: str) -> str:
             AuthType="NONE",
             Cors={
                 "AllowOrigins": ["*"],
-                "AllowMethods": ["GET", "POST", "OPTIONS"],
+                # Lambda Function URL CORS does not accept OPTIONS in AllowMethods.
+                "AllowMethods": ["GET", "POST"],
                 "AllowHeaders": ["content-type"],
                 "MaxAge": 86400,
             },
