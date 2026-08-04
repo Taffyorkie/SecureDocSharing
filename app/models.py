@@ -15,8 +15,10 @@ class ShareSession:
     share_id: str
     recipient_email: str
     recipient_email_hash: str
-    password_hash: str
-    password_salt: str
+    password_hash: str | None
+    password_salt: str | None
+    access_pin_hash: str
+    access_pin_salt: str
     expires_at: datetime
     created_at: datetime
     files: list[ShareFile]

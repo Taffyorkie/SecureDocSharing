@@ -1,0 +1,67 @@
+name: Deploy AWS Share Proxy
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: AWS region for the proxy infrastructure
+        required: true
+        default: us-east-1
+        type: string
+      proxy_prefix:
+        description: Resource naming prefix
+        required: true
+        default: secure-doc-sharing
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install script dependencies
+        run: pip install boto3
+
+      - name: Deploy or update proxy infrastructure
+        run: |
+          python scripts/aws_deploy_proxy.py \
+            --region "${{ inputs.aws_region }}" \
+            --prefix "${{ inputs.proxy_prefix }}" \
+            --result-json "$RUNNER_TEMP/proxy-config.json"
+
+      - name: Publish deployment summary
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("proxy-config.json").read_text())
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          summary.write_text(
+              "# AWS share proxy deployed\n\n"
+              f"- Region: {payload['region']}\n"
+              f"- Lambda function URL: {payload['functionUrl']}\n"
+              f"- S3 bucket: {payload['bucketName']}\n"
+              f"- DynamoDB table: {payload['tableName']}\n"
+              f"- Lambda function: {payload['functionName']}\n",
+              encoding="utf-8",
+          )
+          PY

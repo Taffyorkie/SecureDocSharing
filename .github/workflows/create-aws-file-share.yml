@@ -1,0 +1,97 @@
+name: Create AWS File Share
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipient_email:
+        description: Recipient email address
+        required: true
+        type: string
+      ttl_seconds:
+        description: Link TTL in seconds (max 604800)
+        required: true
+        default: "3600"
+        type: string
+      password:
+        description: Optional password (empty is allowed)
+        required: false
+        default: ""
+        type: string
+      folder_path:
+        description: Folder path in repository workspace to package
+        required: true
+        type: string
+      aws_region:
+        description: AWS region for the share proxy
+        required: true
+        default: us-east-1
+        type: string
+      proxy_prefix:
+        description: Resource naming prefix
+        required: true
+        default: secure-doc-sharing
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  create-share:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install script dependencies
+        run: pip install boto3
+
+      - name: Ensure proxy infrastructure exists
+        run: |
+          python scripts/aws_deploy_proxy.py \
+            --region "${{ inputs.aws_region }}" \
+            --prefix "${{ inputs.proxy_prefix }}" \
+            --result-json "$RUNNER_TEMP/proxy-config.json"
+
+      - name: Create secure file share
+        run: |
+          python scripts/aws_create_share.py \
+            --region "${{ inputs.aws_region }}" \
+            --recipient-email "${{ inputs.recipient_email }}" \
+            --ttl-seconds "${{ inputs.ttl_seconds }}" \
+            --password "${{ inputs.password }}" \
+            --folder "${{ inputs.folder_path }}" \
+            --proxy-config-json "$RUNNER_TEMP/proxy-config.json" \
+            --result-json "$RUNNER_TEMP/share-result.json"
+
+      - name: Publish share details
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("share-result.json").read_text())
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          summary.write_text(
+              "# Secure AWS share created\n\n"
+              f"- Share URL: {result['shareUrl']}\n"
+              f"- PIN: {result['pin']}\n"
+              f"- Recipient: {result['recipientEmail']}\n"
+              f"- Expires at: {result['expiresAt']}\n"
+              f"- Password protected: {'yes' if result['passwordProtected'] else 'no'}\n"
+              f"- Included files: {result['fileCount']}\n",
+              encoding="utf-8",
+          )
+          PY

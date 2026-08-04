@@ -26,38 +26,31 @@ def test_create_share_sets_one_hour_expiry_and_upload_controls():
 
     assert result["recipientEmail"] == "recipient@example.com"
     assert result["expiresAt"] == (now + timedelta(hours=1)).isoformat()
-    assert result["password"]
+    assert result["pin"]
     assert result["uploadUrls"][0]["upload"]["headers"]["x-amz-server-side-encryption"] == "aws:kms"
-    assert repo.get(result["shareId"]).password_hash != result["password"]
+    assert repo.get(result["shareId"]).password_hash is None
     assert mailer.sent_messages[0]["type"] == "access_link"
 
 
-def test_download_requires_matching_email_password_and_otp():
+def test_download_requires_matching_email_optional_password_and_pin():
     now = datetime(2026, 1, 1, tzinfo=UTC)
     service, repo, mailer, _ = build_service(now)
     share = service.create_share(
         recipient_email="recipient@example.com",
+        password="S3cret!",
         files=[{"path": "folder/file.txt", "size_bytes": 12, "content_type": "text/plain"}],
     )
-
-    service.request_otp(
-        share_id=share["shareId"],
-        recipient_email="recipient@example.com",
-        password=share["password"],
-    )
-    session = repo.get(share["shareId"])
-    otp_code = session.otp_code
 
     download = service.authorize_download(
         share_id=share["shareId"],
         recipient_email="recipient@example.com",
         password=share["password"],
-        otp_code=otp_code,
+        otp_code=share["pin"],
     )
 
     assert download["objectKey"] == f"temp/{share['shareId']}.zip"
     assert download["expiresIn"] == 300
-    assert mailer.sent_messages[1]["type"] == "otp"
+    assert repo.get(share["shareId"]) is None
 
 
 def test_share_denies_access_after_one_hour_expiry():
@@ -74,7 +67,7 @@ def test_share_denies_access_after_one_hour_expiry():
         service.request_otp(
             share_id=share["shareId"],
             recipient_email="recipient@example.com",
-            password=share["password"],
+            password="",
         )
     except ValueError as exc:
         assert str(exc) == "Share has expired"
@@ -82,41 +75,38 @@ def test_share_denies_access_after_one_hour_expiry():
         raise AssertionError("Expected expired share to be rejected")
 
 
-def test_share_denies_second_download_after_success():
+def test_share_uses_custom_ttl_and_passwordless_downloads():
     now = datetime(2026, 1, 1, tzinfo=UTC)
     service, repo, _, _ = build_service(now)
     share = service.create_share(
         recipient_email="recipient@example.com",
+        ttl_seconds=90,
         files=[{"path": "folder/file.txt", "size_bytes": 12, "content_type": "text/plain"}],
     )
-    service.request_otp(
-        share_id=share["shareId"],
-        recipient_email="recipient@example.com",
-        password=share["password"],
-    )
-    otp_code = repo.get(share["shareId"]).otp_code
+
+    assert share["ttlSeconds"] == 90
+    assert share["expiresAt"] == (now + timedelta(seconds=90)).isoformat()
+
     service.authorize_download(
         share_id=share["shareId"],
         recipient_email="recipient@example.com",
-        password=share["password"],
-        otp_code=otp_code,
+        password="",
+        otp_code=share["pin"],
     )
 
-    service.request_otp(
-        share_id=share["shareId"],
-        recipient_email="recipient@example.com",
-        password=share["password"],
-    )
-    second_otp = repo.get(share["shareId"]).otp_code
+    assert repo.get(share["shareId"]) is None
+
+def test_share_rejects_invalid_ttl():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    service, _, _, _ = build_service(now)
 
     try:
-        service.authorize_download(
-            share_id=share["shareId"],
+        service.create_share(
             recipient_email="recipient@example.com",
-            password=share["password"],
-            otp_code=second_otp,
+            ttl_seconds=0,
+            files=[{"path": "folder/file.txt", "size_bytes": 12, "content_type": "text/plain"}],
         )
     except ValueError as exc:
-        assert str(exc) == "Download no longer available"
+        assert str(exc) == "TTL is not valid"
     else:
-        raise AssertionError("Expected second download to be rejected")
+        raise AssertionError("Expected invalid TTL to be rejected")

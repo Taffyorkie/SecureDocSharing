@@ -1,0 +1,73 @@
+name: Cleanup AWS Shares
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: AWS region for the share proxy
+        required: true
+        default: us-east-1
+        type: string
+      proxy_prefix:
+        description: Resource naming prefix
+        required: true
+        default: secure-doc-sharing
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ inputs.aws_region || 'us-east-1' }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install script dependencies
+        run: pip install boto3
+
+      - name: Resolve proxy resources
+        run: |
+          python scripts/aws_deploy_proxy.py \
+            --region "${{ inputs.aws_region || 'us-east-1' }}" \
+            --prefix "${{ inputs.proxy_prefix || 'secure-doc-sharing' }}" \
+            --result-json "$RUNNER_TEMP/proxy-config.json"
+
+      - name: Cleanup expired or consumed shares
+        run: |
+          python scripts/aws_cleanup_shares.py \
+            --region "${{ inputs.aws_region || 'us-east-1' }}" \
+            --proxy-config-json "$RUNNER_TEMP/proxy-config.json" \
+            --result-json "$RUNNER_TEMP/cleanup-result.json"
+
+      - name: Publish cleanup summary
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("cleanup-result.json").read_text())
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          summary.write_text(
+              "# AWS share cleanup\n\n"
+              f"- Removed shares: {result['removedShares']}\n"
+              f"- Checked at epoch: {result['checkedAtEpoch']}\n",
+              encoding="utf-8",
+          )
+          PY

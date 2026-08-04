@@ -1,1 +1,2 @@
 pytest==8.4.1
+cryptography==45.0.6

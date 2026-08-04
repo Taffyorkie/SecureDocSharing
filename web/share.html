@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Download Shared Folder</title>
+    <link rel="stylesheet" href="../../assets/share.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="card" id="access-card">
+        <p class="eyebrow">Secure document delivery</p>
+        <h1>Download shared folder</h1>
+        <p class="lede">Enter the email address, password if one was set, and the PIN that accompanied the link.</p>
+        <form id="access-form">
+          <label>
+            <span>Email address</span>
+            <input id="email" name="email" type="email" autocomplete="email" required />
+          </label>
+          <label>
+            <span>Password</span>
+            <input id="password" name="password" type="password" autocomplete="current-password" />
+          </label>
+          <label>
+            <span>PIN</span>
+            <input id="pin" name="pin" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" required />
+          </label>
+          <button id="download-button" type="submit">Authenticate and download</button>
+        </form>
+        <p class="status" id="status" aria-live="polite"></p>
+      </section>
+
+      <section class="card hidden" id="complete-card">
+        <p class="eyebrow">Complete</p>
+        <h2>Download finished</h2>
+        <p class="lede">The encrypted package was decrypted locally and handed off to your browser for saving.</p>
+      </section>
+
+      <section class="card hidden" id="expired-card">
+        <p class="eyebrow">Unavailable</p>
+        <h2>This share is no longer accessible</h2>
+        <p class="lede">The link has expired or the underlying package has been removed.</p>
+      </section>
+    </main>
+    <script type="module" src="../../assets/share.js"></script>
+  </body>
+</html>

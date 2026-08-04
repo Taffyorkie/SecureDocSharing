@@ -1,0 +1,120 @@
+name: Create Secure Share
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipient_email:
+        description: Recipient email address
+        required: true
+        type: string
+      ttl_seconds:
+        description: Link lifetime in seconds
+        required: true
+        default: "3600"
+        type: string
+      password:
+        description: Optional password
+        required: false
+        default: ""
+        type: string
+      folder_path:
+        description: Folder path to package and publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish-share:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compute public base URL
+        env:
+          REPOSITORY: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          repo_name="${REPOSITORY#*/}"
+          if [ "$repo_name" = "${OWNER}.github.io" ]; then
+            echo "PUBLIC_SHARE_BASE_URL=https://${OWNER}.github.io" >> "$GITHUB_ENV"
+          else
+            echo "PUBLIC_SHARE_BASE_URL=https://${OWNER}.github.io/${repo_name}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build static share package
+        env:
+          PUBLIC_SHARE_BASE_URL: ${{ env.PUBLIC_SHARE_BASE_URL }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/share-site"
+          python scripts/build_share_site.py \
+            --recipient-email "${{ inputs.recipient_email }}" \
+            --ttl-seconds "${{ inputs.ttl_seconds }}" \
+            --password "${{ inputs.password }}" \
+            --folder "${{ inputs.folder_path }}" \
+            --site-root "$RUNNER_TEMP/share-site" \
+            --public-base-url "$PUBLIC_SHARE_BASE_URL" \
+            --result-json "$RUNNER_TEMP/share-result.json"
+
+      - name: Prepare gh-pages worktree
+        run: |
+          git fetch origin gh-pages:gh-pages || true
+          if git show-ref --verify --quiet refs/heads/gh-pages; then
+            git worktree add "$RUNNER_TEMP/gh-pages" gh-pages
+          else
+            git worktree add -b gh-pages "$RUNNER_TEMP/gh-pages"
+            cd "$RUNNER_TEMP/gh-pages"
+            git rm -rf . || true
+          fi
+
+      - name: Publish share content
+        run: |
+          share_id=$(python -c 'import json, pathlib; print(json.loads(pathlib.Path("'"$RUNNER_TEMP"'/share-result.json").read_text())["shareId"])')
+          mkdir -p "$RUNNER_TEMP/gh-pages/assets" "$RUNNER_TEMP/gh-pages/shares"
+          cp "$RUNNER_TEMP/share-site/index.html" "$RUNNER_TEMP/gh-pages/index.html"
+          cp -R "$RUNNER_TEMP/share-site/assets/." "$RUNNER_TEMP/gh-pages/assets/"
+          rm -rf "$RUNNER_TEMP/gh-pages/shares/$share_id"
+          cp -R "$RUNNER_TEMP/share-site/shares/$share_id" "$RUNNER_TEMP/gh-pages/shares/$share_id"
+          touch "$RUNNER_TEMP/gh-pages/.nojekyll"
+          cd "$RUNNER_TEMP/gh-pages"
+          git add .
+          if git diff --cached --quiet; then
+            echo "No publish changes detected."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Publish secure share $share_id"
+          git push origin gh-pages
+
+      - name: Summarize share details
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("share-result.json").read_text())
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          summary.write_text(
+              "# Secure share created\n\n"
+              f"- Share URL: {result['shareUrl']}\n"
+              f"- PIN: {result['pin']}\n"
+              f"- Recipient: {result['recipientEmail']}\n"
+              f"- Expires at: {result['expiresAt']}\n"
+              f"- Password protected: {'yes' if result['passwordProtected'] else 'no'}\n",
+              encoding="utf-8",
+          )
+          PY

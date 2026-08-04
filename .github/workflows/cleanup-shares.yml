@@ -1,0 +1,59 @@
+name: Cleanup Secure Shares
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+    inputs:
+      share_id:
+        description: Optional share ID to remove immediately
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prepare gh-pages worktree
+        run: |
+          if ! git fetch origin gh-pages:gh-pages; then
+            echo "HAS_PAGES=false" >> "$GITHUB_ENV"
+            echo "No gh-pages branch exists yet." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "HAS_PAGES=true" >> "$GITHUB_ENV"
+          git worktree add "$RUNNER_TEMP/gh-pages" gh-pages
+
+      - name: Remove expired shares
+        if: env.HAS_PAGES == 'true'
+        run: |
+          args=""
+          if [ -n "${{ inputs.share_id }}" ]; then
+            args="--share-id ${{ inputs.share_id }}"
+          fi
+          python scripts/cleanup_expired_shares.py --site-root "$RUNNER_TEMP/gh-pages" $args
+          cd "$RUNNER_TEMP/gh-pages"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No expired shares were removed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Cleanup expired secure shares"
+          git push origin gh-pages
+          echo "Expired shares were removed from gh-pages." >> "$GITHUB_STEP_SUMMARY"
