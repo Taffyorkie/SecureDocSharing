@@ -232,20 +232,38 @@ def ensure_lambda(lambda_client, function_name: str, role_arn: str, bucket_name:
 
 
 def ensure_function_url(lambda_client, function_name: str) -> str:
+    cors_config = {
+        "AllowOrigins": ["*"],
+        # Lambda Function URL CORS does not accept OPTIONS in AllowMethods.
+        "AllowMethods": ["GET", "POST"],
+        "AllowHeaders": ["content-type"],
+        "MaxAge": 86400,
+    }
+
     try:
         current = lambda_client.get_function_url_config(FunctionName=function_name)
-        function_url = current["FunctionUrl"]
-    except ClientError:
+        if current.get("AuthType") != "NONE":
+            updated = lambda_client.update_function_url_config(
+                FunctionName=function_name,
+                AuthType="NONE",
+                Cors=cors_config,
+            )
+            function_url = updated["FunctionUrl"]
+        else:
+            # Keep CORS aligned with the expected browser flow.
+            updated = lambda_client.update_function_url_config(
+                FunctionName=function_name,
+                AuthType="NONE",
+                Cors=cors_config,
+            )
+            function_url = updated["FunctionUrl"]
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise
         created = lambda_client.create_function_url_config(
             FunctionName=function_name,
             AuthType="NONE",
-            Cors={
-                "AllowOrigins": ["*"],
-                # Lambda Function URL CORS does not accept OPTIONS in AllowMethods.
-                "AllowMethods": ["GET", "POST"],
-                "AllowHeaders": ["content-type"],
-                "MaxAge": 86400,
-            },
+            Cors=cors_config,
         )
         function_url = created["FunctionUrl"]
 
@@ -257,6 +275,21 @@ def ensure_function_url(lambda_client, function_name: str) -> str:
             Action="lambda:InvokeFunctionUrl",
             Principal="*",
             FunctionUrlAuthType="NONE",
+        )
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "ResourceConflictException":
+            raise
+
+    # Some accounts/policies still require InvokeFunction permission constrained to Function URL invocations.
+    invoke_statement_id = "SecureShareProxyInvokeViaFunctionUrl"
+    try:
+        lambda_client.add_permission(
+            FunctionName=function_name,
+            StatementId=invoke_statement_id,
+            Action="lambda:InvokeFunction",
+            Principal="*",
+            FunctionUrlAuthType="NONE",
+            InvokedViaFunctionUrl=True,
         )
     except ClientError as error:
         if error.response.get("Error", {}).get("Code") != "ResourceConflictException":
