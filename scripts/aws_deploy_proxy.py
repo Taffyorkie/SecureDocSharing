@@ -288,7 +288,6 @@ def ensure_function_url(lambda_client, function_name: str) -> str:
             StatementId=invoke_statement_id,
             Action="lambda:InvokeFunction",
             Principal="*",
-            FunctionUrlAuthType="NONE",
             InvokedViaFunctionUrl=True,
         )
     except ClientError as error:
