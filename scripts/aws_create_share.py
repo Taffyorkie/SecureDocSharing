@@ -7,6 +7,7 @@ import hmac
 from io import BytesIO
 import json
 import mimetypes
+import os
 from pathlib import Path
 import secrets
 import zipfile
@@ -72,13 +73,36 @@ def ensure_valid_ttl(ttl_seconds: int) -> None:
         raise ValueError("ttl_seconds cannot exceed 604800 seconds (7 days)")
 
 
+def resolve_folder_path(folder_input: str) -> Path:
+    raw = folder_input.strip()
+    expanded = Path(raw).expanduser()
+    candidates = []
+
+    if expanded.is_absolute():
+        candidates.append(expanded)
+    else:
+        candidates.append(Path.cwd() / expanded)
+        workspace = os.environ.get("GITHUB_WORKSPACE")
+        if workspace:
+            candidates.append(Path(workspace) / expanded)
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists() and resolved.is_dir():
+            return resolved
+
+    examined = ", ".join(str(path.resolve()) for path in candidates)
+    raise ValueError(
+        "folder must point to an existing directory on the GitHub runner. "
+        f"Input '{folder_input}' resolved to: {examined}"
+    )
+
+
 def main() -> None:
     args = parse_args()
     ensure_valid_ttl(args.ttl_seconds)
 
-    folder = Path(args.folder).resolve()
-    if not folder.exists() or not folder.is_dir():
-        raise ValueError("folder must point to an existing directory")
+    folder = resolve_folder_path(args.folder)
 
     files = collect_content_summary(folder)
     if not files:

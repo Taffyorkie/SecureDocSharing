@@ -64,6 +64,29 @@ jobs:
             --prefix "${{ inputs.proxy_prefix }}" \
             --result-json "$RUNNER_TEMP/proxy-config.json"
 
+      - name: Validate folder path input
+        run: |
+          target="${{ inputs.folder_path }}"
+          if [ -z "$target" ]; then
+            echo "folder_path input is empty." >&2
+            exit 1
+          fi
+
+          if [ -d "$target" ]; then
+            resolved="$target"
+          elif [ -d "$GITHUB_WORKSPACE/$target" ]; then
+            resolved="$GITHUB_WORKSPACE/$target"
+          else
+            echo "folder_path '$target' is not a directory on this runner." >&2
+            echo "Workspace root: $GITHUB_WORKSPACE" >&2
+            echo "Top-level entries:" >&2
+            ls -la "$GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+
+          echo "Resolved folder path: $resolved"
+          echo "RESOLVED_FOLDER_PATH=$resolved" >> "$GITHUB_ENV"
+
       - name: Create secure file share
         run: |
           python scripts/aws_create_share.py \
@@ -71,7 +94,7 @@ jobs:
             --recipient-email "${{ inputs.recipient_email }}" \
             --ttl-seconds "${{ inputs.ttl_seconds }}" \
             --password "${{ inputs.password }}" \
-            --folder "${{ inputs.folder_path }}" \
+            --folder "$RESOLVED_FOLDER_PATH" \
             --proxy-config-json "$RUNNER_TEMP/proxy-config.json" \
             --result-json "$RUNNER_TEMP/share-result.json"
 
