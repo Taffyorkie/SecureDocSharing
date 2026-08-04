@@ -10,6 +10,35 @@ import boto3
 from botocore.exceptions import ClientError
 
 
+def _wait_for_lambda_idle(lambda_client, function_name: str, *, timeout_seconds: int = 180) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        config = lambda_client.get_function_configuration(FunctionName=function_name)
+        status = config.get("LastUpdateStatus")
+        state = config.get("State")
+        if state == "Active" and status in {None, "Successful"}:
+            return
+        if status == "Failed":
+            reason = config.get("LastUpdateStatusReason", "Lambda update failed")
+            raise RuntimeError(reason)
+        time.sleep(3)
+    raise TimeoutError(f"Timed out waiting for Lambda function '{function_name}' to become idle")
+
+
+def _retry_lambda_update(callable_operation, *, retries: int = 8) -> None:
+    for attempt in range(1, retries + 1):
+        try:
+            callable_operation()
+            return
+        except ClientError as error:
+            code = error.response.get("Error", {}).get("Code")
+            message = error.response.get("Error", {}).get("Message", "").lower()
+            busy_update = code == "ResourceConflictException" and "update is in progress" in message
+            if not busy_update or attempt == retries:
+                raise
+            time.sleep(2 * attempt)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deploy or update AWS file share proxy infrastructure")
     parser.add_argument("--region", required=True)
@@ -159,16 +188,21 @@ def ensure_lambda(lambda_client, function_name: str, role_arn: str, bucket_name:
             raise
 
     if function_exists:
-        lambda_client.update_function_code(FunctionName=function_name, ZipFile=code_zip)
-        lambda_client.update_function_configuration(
-            FunctionName=function_name,
-            Role=role_arn,
-            Runtime="python3.12",
-            Handler="aws_proxy_lambda.handler",
-            Timeout=30,
-            MemorySize=512,
-            Environment={"Variables": {"SHARE_BUCKET_NAME": bucket_name, "SHARE_TABLE_NAME": table_name}},
+        _wait_for_lambda_idle(lambda_client, function_name)
+        _retry_lambda_update(lambda: lambda_client.update_function_code(FunctionName=function_name, ZipFile=code_zip))
+        _wait_for_lambda_idle(lambda_client, function_name)
+        _retry_lambda_update(
+            lambda: lambda_client.update_function_configuration(
+                FunctionName=function_name,
+                Role=role_arn,
+                Runtime="python3.12",
+                Handler="aws_proxy_lambda.handler",
+                Timeout=30,
+                MemorySize=512,
+                Environment={"Variables": {"SHARE_BUCKET_NAME": bucket_name, "SHARE_TABLE_NAME": table_name}},
+            )
         )
+        _wait_for_lambda_idle(lambda_client, function_name)
     else:
         # Retry create to handle eventual consistency of freshly created/updated IAM role trust policy.
         for attempt in range(1, 8):
@@ -191,6 +225,7 @@ def ensure_lambda(lambda_client, function_name: str, role_arn: str, bucket_name:
                 if not is_assume_role_delay or attempt == 7:
                     raise
                 time.sleep(5 * attempt)
+        _wait_for_lambda_idle(lambda_client, function_name)
 
     # Give IAM and Lambda time to settle before URL operations.
     time.sleep(8)
