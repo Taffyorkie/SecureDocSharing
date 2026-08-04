@@ -1,0 +1,85 @@
+name: Destroy AWS Share Proxy
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: AWS region where proxy resources exist
+        required: true
+        default: us-east-1
+        type: string
+      proxy_prefix:
+        description: Resource naming prefix
+        required: true
+        default: secure-doc-sharing
+        type: string
+      confirm_destroy:
+        description: Type DESTROY to confirm irreversible deletion
+        required: true
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  destroy:
+    if: ${{ inputs.confirm_destroy == 'DESTROY' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install script dependencies
+        run: pip install boto3
+
+      - name: Destroy proxy resources
+        run: |
+          python scripts/aws_destroy_proxy.py \
+            --region "${{ inputs.aws_region }}" \
+            --prefix "${{ inputs.proxy_prefix }}" \
+            --result-json "$RUNNER_TEMP/destroy-result.json"
+
+      - name: Publish destruction summary
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("destroy-result.json").read_text())
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          actions = result.get("actions", [])
+          action_lines = "\n".join(f"- {entry}" for entry in actions) if actions else "- No resources required deletion"
+          summary.write_text(
+              "# AWS share proxy destroyed\n\n"
+              f"- Region: {result['region']}\n"
+              f"- Function: {result['functionName']}\n"
+              f"- DynamoDB table: {result['tableName']}\n"
+              f"- S3 bucket: {result['bucketName']}\n"
+              f"- IAM role: {result['roleName']}\n\n"
+              "## Actions performed\n"
+              f"{action_lines}\n",
+              encoding="utf-8",
+          )
+          PY
+
+  missing-confirmation:
+    if: ${{ inputs.confirm_destroy != 'DESTROY' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirmation was not provided
+        run: |
+          echo "Destruction skipped. Set confirm_destroy=DESTROY to execute this workflow." >> "$GITHUB_STEP_SUMMARY"

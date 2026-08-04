@@ -74,6 +74,18 @@ Workflows:
 	- Runs every 15 minutes and can be triggered manually.
 	- Removes expired or consumed shares and deletes associated objects.
 
+4. `Destroy AWS Share Proxy` (`.github/workflows/destroy-aws-share-proxy.yml`)
+	- Manual teardown workflow for all proxy resources.
+	- Inputs:
+	- `aws_region`
+	- `proxy_prefix`
+	- `confirm_destroy` (must be exactly `DESTROY`)
+	- Deletes:
+	- Lambda function URL and Lambda function
+	- DynamoDB table
+	- S3 payload bucket contents and bucket
+	- IAM inline role policy and IAM role
+
 Behavior summary:
 
 - The recipient visits the share URL and enters email, password (if required), and PIN.
